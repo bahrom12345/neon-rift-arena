@@ -308,7 +308,7 @@
   <div class="center-layer">
     <section id="startScreen" class="start">
       <h1>Neon Rift Arena</h1>
-      <p>A bigger io-style battlefield. Fly, boost, collect cores, hide in pulse rings, and fight other pilots on the same map.</p>
+      <p>A bigger people-only io-style battlefield. Fly, boost, collect cores, grab superpowers, and fight other pilots on the same map.</p>
       <form id="joinForm" class="form">
         <input id="nameInput" maxlength="14" autocomplete="off" placeholder="Pilot name" aria-label="Pilot name">
         <button class="primary" type="submit">Join Battle</button>
@@ -316,7 +316,7 @@
       <div class="tips">
         <div class="tip"><b>Move</b><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys.</div>
         <div class="tip"><b>Fight</b>Aim with mouse. Hold mouse button to fire.</div>
-        <div class="tip"><b>Survive</b>Hold <kbd>Space</kbd> to boost through the huge map.</div>
+        <div class="tip"><b>Power Up</b>Diamond pickups give shield, rapid fire, repair, warp, or nova blast.</div>
       </div>
     </section>
 
@@ -350,6 +350,7 @@
     };
 
     const API = "/.netlify/functions/arena";
+    const SYNC_INTERVAL_MS = 120;
     const TAU = Math.PI * 2;
     const ARENA = { w: 5600, h: 5600 };
     const keys = new Set();
@@ -369,13 +370,13 @@
       time: 0,
       stars: [],
       cores: [],
+      powerups: [],
       storms: [],
       rings: [],
       bullets: [],
       remoteBullets: new Map(),
       particles: [],
       hitShots: new Set(),
-      bots: [],
       shake: 0
     };
 
@@ -394,6 +395,8 @@
       score: 0,
       level: 1,
       fireTimer: 0,
+      shieldTimer: 0,
+      rapidTimer: 0,
       radius: 19
     };
 
@@ -456,6 +459,21 @@
         r: 96 + Math.random() * 44,
         pulse: i
       }));
+
+      game.powerups = Array.from({ length: 28 }, (_, i) => makePowerup(i));
+    }
+
+    function makePowerup(index) {
+      const types = ["shield", "rapid", "nova", "repair", "warp"];
+      return {
+        id: "power-" + index,
+        type: types[Math.floor(Math.random() * types.length)],
+        x: 220 + Math.random() * (ARENA.w - 440),
+        y: 220 + Math.random() * (ARENA.h - 440),
+        r: 15,
+        pulse: Math.random() * TAU,
+        taken: 0
+      };
     }
 
     function spawnPlayer() {
@@ -465,6 +483,8 @@
       player.vy = 0;
       player.health = player.maxHealth;
       player.energy = 100;
+      player.shieldTimer = 3.5;
+      player.rapidTimer = 0;
       game.dead = false;
       ui.deathScreen.classList.remove("visible");
     }
@@ -475,25 +495,6 @@
       ui.startScreen.classList.add("hidden");
       game.running = true;
       spawnPlayer();
-      if (!canUseOnlineArena()) makeBots();
-    }
-
-    function makeBots() {
-      game.bots = Array.from({ length: 9 }, (_, i) => ({
-        id: "bot-" + i,
-        name: ["Vector", "Ion", "Nova", "Echo", "Pulse", "Zero", "Vex", "Orbit", "Flux"][i],
-        color: randomColor(),
-        x: 300 + Math.random() * (ARENA.w - 600),
-        y: 300 + Math.random() * (ARENA.h - 600),
-        vx: 0,
-        vy: 0,
-        angle: 0,
-        health: 100,
-        score: Math.floor(Math.random() * 600),
-        level: 1,
-        radius: 19,
-        fireTimer: Math.random()
-      }));
     }
 
     function canUseOnlineArena() {
@@ -507,15 +508,16 @@
       if (!game.dead) {
         updatePlayer(dt);
         updatePickups(dt);
+        updatePowerups(dt);
         updateHazards(dt);
         updateShooting(dt);
       }
 
-      if (!net.online) updateBots(dt);
       updateBullets(dt);
       updateRemoteShots(dt);
       updateParticles(dt);
       updateCamera(dt);
+      updateRemoteInterpolation(dt);
       maybeSync();
       updateHud();
     }
@@ -545,6 +547,8 @@
 
       const worldMouse = screenToWorld(mouse.x, mouse.y);
       player.angle = Math.atan2(worldMouse.y - player.y, worldMouse.x - player.x);
+      player.shieldTimer = Math.max(0, player.shieldTimer - dt);
+      player.rapidTimer = Math.max(0, player.rapidTimer - dt);
 
       if (boosting) addParticles(player.x - Math.cos(player.angle) * 10, player.y - Math.sin(player.angle) * 10, player.color, 2, 180, 0.28);
     }
@@ -576,6 +580,59 @@
       }
     }
 
+    function updatePowerups(dt) {
+      for (let i = 0; i < game.powerups.length; i++) {
+        const powerup = game.powerups[i];
+        powerup.taken = Math.max(0, powerup.taken - dt);
+        if (powerup.taken > 0) continue;
+
+        const d = Math.hypot(player.x - powerup.x, player.y - powerup.y);
+        if (d < player.radius + powerup.r) {
+          activatePowerup(powerup.type);
+          addParticles(powerup.x, powerup.y, powerColor(powerup.type), 26, 280, 0.55);
+          game.powerups[i] = makePowerup(i);
+          game.powerups[i].taken = 5;
+        }
+      }
+    }
+
+    function activatePowerup(type) {
+      if (type === "shield") {
+        player.shieldTimer = 8;
+      } else if (type === "rapid") {
+        player.rapidTimer = 9;
+      } else if (type === "repair") {
+        player.health = Math.min(player.maxHealth, player.health + 55);
+      } else if (type === "warp") {
+        const a = player.angle;
+        player.x = clamp(player.x + Math.cos(a) * 520, player.radius, ARENA.w - player.radius);
+        player.y = clamp(player.y + Math.sin(a) * 520, player.radius, ARENA.h - player.radius);
+        player.energy = 100;
+      } else if (type === "nova") {
+        fireNova();
+      }
+      player.score += 75;
+    }
+
+    function fireNova() {
+      for (let i = 0; i < 18; i++) {
+        const oldAngle = player.angle;
+        player.angle = (i / 18) * TAU;
+        shoot(player, true, 0.8);
+        player.angle = oldAngle;
+      }
+    }
+
+    function powerColor(type) {
+      return {
+        shield: "#31d7ff",
+        rapid: "#ffc857",
+        nova: "#ff5d73",
+        repair: "#70f2a4",
+        warp: "#c77dff"
+      }[type] || "#eef7ff";
+    }
+
     function updateHazards(dt) {
       for (const storm of game.storms) {
         const d = Math.hypot(player.x - storm.x, player.y - storm.y);
@@ -594,11 +651,12 @@
       player.fireTimer -= dt;
       if (mouse.down && player.fireTimer <= 0) {
         shoot(player, true);
-        player.fireTimer = Math.max(0.11, 0.22 - player.level * 0.008);
+        const baseRate = player.rapidTimer > 0 ? 0.08 : 0.2;
+        player.fireTimer = Math.max(0.07, baseRate - player.level * 0.006);
       }
     }
 
-    function shoot(actor, local) {
+    function shoot(actor, local, lifeMultiplier = 1) {
       const speed = 860;
       const id = actor.id + "-" + Date.now() + "-" + Math.floor(Math.random() * 10000);
       game.bullets.push({
@@ -610,8 +668,8 @@
         vx: Math.cos(actor.angle) * speed + actor.vx * 0.2,
         vy: Math.sin(actor.angle) * speed + actor.vy * 0.2,
         r: 5,
-        damage: local ? 17 + player.level * 1.7 : 14,
-        life: 1.15,
+        damage: local ? 14 + player.level * 1.4 : 12,
+        life: 1.15 * lifeMultiplier,
         createdAt: Date.now(),
         color: actor.color
       });
@@ -625,7 +683,7 @@
         bullet.life -= dt;
 
         if (bullet.owner === player.id) {
-          const targets = [...net.remote.values(), ...game.bots];
+          const targets = [...net.remote.values()];
           for (const target of targets) {
             if (target.health <= 0) continue;
             const d = Math.hypot(target.x - bullet.x, target.y - bullet.y);
@@ -633,13 +691,6 @@
               bullet.life = 0;
               player.score += 12;
               addParticles(bullet.x, bullet.y, target.color || "#ff5d73", 10, 180, 0.35);
-              if (!net.online && target.id && target.id.startsWith("bot-")) {
-                target.health -= bullet.damage;
-                if (target.health <= 0) {
-                  player.score += 280;
-                  respawnBot(target);
-                }
-              }
             }
           }
         }
@@ -670,6 +721,10 @@
 
     function damagePlayer(amount, source) {
       if (game.dead) return;
+      if (player.shieldTimer > 0) {
+        addParticles(player.x, player.y, "#31d7ff", 4, 120, 0.2);
+        return;
+      }
       player.health -= amount;
       game.shake = Math.max(game.shake, 7);
       if (player.health <= 0) {
@@ -680,44 +735,6 @@
           : `${source} knocked you out. Respawn and take revenge.`;
         ui.deathScreen.classList.add("visible");
       }
-    }
-
-    function updateBots(dt) {
-      for (const bot of game.bots) {
-        const a = Math.atan2(player.y - bot.y, player.x - bot.x) + Math.sin(game.time + bot.x) * 0.35;
-        const distance = Math.hypot(player.x - bot.x, player.y - bot.y);
-        const speed = distance > 380 ? 430 : 240;
-        bot.vx += Math.cos(a) * speed * dt;
-        bot.vy += Math.sin(a) * speed * dt;
-        bot.vx *= Math.pow(0.9, dt * 60);
-        bot.vy *= Math.pow(0.9, dt * 60);
-        bot.x = clamp(bot.x + bot.vx * dt, bot.radius, ARENA.w - bot.radius);
-        bot.y = clamp(bot.y + bot.vy * dt, bot.radius, ARENA.h - bot.radius);
-        bot.angle = Math.atan2(player.y - bot.y, player.x - bot.x);
-        bot.fireTimer -= dt;
-        if (distance < 760 && bot.fireTimer <= 0) {
-          shoot(bot, false);
-          bot.fireTimer = 0.55 + Math.random() * 0.5;
-        }
-      }
-
-      for (const bullet of game.bullets) {
-        if (!bullet.owner.startsWith("bot-") || game.hitShots.has(bullet.id)) continue;
-        const d = Math.hypot(player.x - bullet.x, player.y - bullet.y);
-        if (d < player.radius + bullet.r) {
-          game.hitShots.add(bullet.id);
-          bullet.life = 0;
-          damagePlayer(bullet.damage, bullet.ownerName);
-        }
-      }
-    }
-
-    function respawnBot(bot) {
-      addParticles(bot.x, bot.y, bot.color, 36, 320, 0.7);
-      bot.x = 260 + Math.random() * (ARENA.w - 520);
-      bot.y = 260 + Math.random() * (ARENA.h - 520);
-      bot.health = 100;
-      bot.score = Math.max(0, bot.score - 120);
     }
 
     function updateParticles(dt) {
@@ -740,7 +757,7 @@
     }
 
     async function maybeSync() {
-      if (!canUseOnlineArena() || !game.running || net.syncing || Date.now() - net.lastSync < 170) return;
+      if (!canUseOnlineArena() || !game.running || net.syncing || Date.now() - net.lastSync < SYNC_INTERVAL_MS) return;
       net.syncing = true;
       net.lastSync = Date.now();
 
@@ -785,12 +802,10 @@
         const data = await response.json();
         net.online = true;
         net.status = "Online arena";
-        game.bots = [];
         applyRemotePlayers(data.players || []);
       } catch {
         net.online = false;
-        net.status = "Local bot arena";
-        if (!game.bots.length) makeBots();
+        net.status = canUseOnlineArena() ? "Waiting for arena server" : "Local preview";
       } finally {
         net.syncing = false;
       }
@@ -798,14 +813,39 @@
 
     function applyRemotePlayers(players) {
       const seen = new Set();
+      const now = Date.now();
       for (const remote of players) {
         if (!remote || remote.id === player.id) continue;
         seen.add(remote.id);
         const old = net.remote.get(remote.id) || {};
-        net.remote.set(remote.id, { ...old, ...remote });
+        net.remote.set(remote.id, {
+          ...old,
+          ...remote,
+          targetX: remote.x,
+          targetY: remote.y,
+          targetAngle: remote.angle,
+          renderX: old.renderX ?? remote.x,
+          renderY: old.renderY ?? remote.y,
+          renderAngle: old.renderAngle ?? remote.angle,
+          lastSeenAt: now
+        });
       }
       for (const id of net.remote.keys()) {
         if (!seen.has(id)) net.remote.delete(id);
+      }
+    }
+
+    function updateRemoteInterpolation(dt) {
+      const now = Date.now();
+      for (const remote of net.remote.values()) {
+        const serverAge = Math.min(0.28, Math.max(0, (now - Number(remote.updatedAt || remote.lastSeenAt || now)) / 1000));
+        const predictedX = clamp(Number(remote.targetX ?? remote.x) + Number(remote.vx || 0) * serverAge, 0, ARENA.w);
+        const predictedY = clamp(Number(remote.targetY ?? remote.y) + Number(remote.vy || 0) * serverAge, 0, ARENA.h);
+        const blend = 1 - Math.pow(0.78, dt * 60);
+
+        remote.renderX = (remote.renderX ?? predictedX) + (predictedX - (remote.renderX ?? predictedX)) * blend;
+        remote.renderY = (remote.renderY ?? predictedY) + (predictedY - (remote.renderY ?? predictedY)) * blend;
+        remote.renderAngle = lerpAngle(remote.renderAngle ?? remote.targetAngle ?? 0, remote.targetAngle ?? remote.angle ?? 0, blend);
       }
     }
 
@@ -816,7 +856,10 @@
       ui.levelText.textContent = player.level;
       const players = getScoreboardPlayers();
       ui.onlineText.textContent = players.length;
-      ui.networkText.textContent = `${net.status} - map ${ARENA.w} x ${ARENA.h}`;
+      const powers = [];
+      if (player.shieldTimer > 0) powers.push(`Shield ${Math.ceil(player.shieldTimer)}s`);
+      if (player.rapidTimer > 0) powers.push(`Rapid ${Math.ceil(player.rapidTimer)}s`);
+      ui.networkText.textContent = `${net.status} - ${powers.length ? powers.join(" / ") : "collect diamond powers"} - map ${ARENA.w} x ${ARENA.h}`;
 
       ui.scoreboard.innerHTML = "";
       for (const entry of players.slice(0, 8)) {
@@ -829,8 +872,7 @@
     function getScoreboardPlayers() {
       const all = [
         { name: player.name || "You", score: player.score },
-        ...[...net.remote.values()].map(p => ({ name: p.name, score: p.score || 0 })),
-        ...game.bots.map(p => ({ name: p.name, score: p.score || 0 }))
+        ...[...net.remote.values()].map(p => ({ name: p.name, score: p.score || 0 }))
       ];
       return all.sort((a, b) => b.score - a.score);
     }
@@ -924,11 +966,41 @@
         ctx.fill();
         ctx.restore();
       }
+
+      for (const powerup of game.powerups) {
+        if (powerup.taken > 0 || !isVisible(powerup.x, powerup.y, 50)) continue;
+        const color = powerColor(powerup.type);
+        ctx.save();
+        ctx.translate(powerup.x, powerup.y);
+        ctx.rotate(game.time * 1.8 + powerup.pulse);
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 22;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, -18);
+        ctx.lineTo(16, 0);
+        ctx.lineTo(0, 18);
+        ctx.lineTo(-16, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     function drawPlayers() {
-      for (const bot of game.bots) drawShip(bot, false);
-      for (const remote of net.remote.values()) drawShip(remote, false);
+      for (const remote of net.remote.values()) {
+        if (!remote.dead) {
+          drawShip({
+            ...remote,
+            x: remote.renderX ?? remote.x,
+            y: remote.renderY ?? remote.y,
+            angle: remote.renderAngle ?? remote.angle
+          }, false);
+        }
+      }
       if (!game.dead) drawShip(player, true);
     }
 
@@ -961,6 +1033,19 @@
       ctx.textAlign = "center";
       ctx.fillStyle = "#eef7ff";
       ctx.fillText(ship.name || "Pilot", ship.x, ship.y - 46);
+
+      if (isMe && player.shieldTimer > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.42 + Math.sin(game.time * 8) * 0.12;
+        ctx.strokeStyle = "#31d7ff";
+        ctx.lineWidth = 4;
+        ctx.shadowColor = "#31d7ff";
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.arc(ship.x, ship.y, 34, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     function drawBullets() {
@@ -1023,8 +1108,12 @@
         ctx.arc(x + (entity.x / ARENA.w) * size, y + (entity.y / ARENA.h) * size, r, 0, TAU);
         ctx.fill();
       };
-      for (const remote of net.remote.values()) drawDot(remote, remote.color || "#ff5d73", 2.5);
-      for (const bot of game.bots) drawDot(bot, bot.color, 2.5);
+      for (const remote of net.remote.values()) {
+        drawDot({
+          x: remote.renderX ?? remote.x,
+          y: remote.renderY ?? remote.y
+        }, remote.color || "#ff5d73", 2.5);
+      }
       drawDot(player, "#eef7ff", 4);
       ctx.restore();
     }
@@ -1063,6 +1152,12 @@
 
     function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
+    }
+
+    function lerpAngle(from, to, amount) {
+      let delta = ((to - from + Math.PI) % TAU) - Math.PI;
+      if (delta < -Math.PI) delta += TAU;
+      return from + delta * amount;
     }
 
     function rand(min, max) {
