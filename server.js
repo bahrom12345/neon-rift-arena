@@ -2,8 +2,8 @@ import http from "node:http";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8080);
-const TICK_RATE = 20;
-const MAX_PLAYERS = 12;
+const TICK_RATE = 30;
+const MAX_PLAYERS = 10;
 const STALE_MS = 7000;
 
 const players = new Map();
@@ -27,6 +27,11 @@ wss.on("connection", socket => {
     try {
       data = JSON.parse(message);
     } catch {
+      return;
+    }
+
+    if (data.type === "ping") {
+      socket.send(JSON.stringify({ type: "pong", clientTime: data.clientTime || Date.now() }));
       return;
     }
 
